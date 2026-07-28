@@ -1,0 +1,6 @@
+{
+  "name": "Subject Crop PWA",
+  "description": "Browser-side ML photo trimmer that automatically detects subject heads to crop and trim photo batches with zero server upload.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
