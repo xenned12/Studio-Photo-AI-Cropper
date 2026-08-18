@@ -29,7 +29,7 @@ export const CanvasDropZone: React.FC<CanvasDropZoneProps> = ({
     setIsDragOver(false);
     if (e.dataTransfer.files?.length) {
       const files = Array.from(e.dataTransfer.files) as File[];
-      const validFiles = files.filter((file) => file.type.startsWith('image/'));
+      const validFiles = files.filter((file: File) => file.type.startsWith('image/'));
       if (validFiles.length > 0) onFilesSelected(validFiles);
     }
   };
@@ -37,7 +37,7 @@ export const CanvasDropZone: React.FC<CanvasDropZoneProps> = ({
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {
       const files = Array.from(e.target.files) as File[];
-      const validFiles = files.filter((file) => file.type.startsWith('image/'));
+      const validFiles = files.filter((file: File) => file.type.startsWith('image/'));
       if (validFiles.length > 0) onFilesSelected(validFiles);
     }
   };
