@@ -1,39 +1,57 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { CropSettings, ImageItem } from './types';
-import { Header } from './components/Header';
-import { RatioSelector } from './components/RatioSelector';
-import { DropZone } from './components/DropZone';
-import { BatchGrid } from './components/BatchGrid';
-import { SingleEditorModal } from './components/SingleEditorModal';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ImageItem, ExtendedCropSettings, GuidesVisibility, CropRect, DetectedHead } from './types';
+import { WorkspaceHeader } from './components/layout/WorkspaceHeader';
+import { PresetSidebar } from './components/sidebar/PresetSidebar';
+import { CanvasStage } from './components/canvas/CanvasStage';
+import { StudioInspector } from './components/sidebar/StudioInspector';
+import { FilmstripQueue } from './components/filmstrip/FilmstripQueue';
+import { BatchLightTable } from './components/grid/BatchLightTable';
+import { KeyboardShortcutsModal } from './components/common/KeyboardShortcutsModal';
 import { PWAInstallPrompt } from './components/PWAInstallPrompt';
 import { detectHeadInImage } from './utils/faceDetector';
 import { calculateCropRect, renderCroppedImage } from './utils/cropMath';
-import { downloadBatchAsZip } from './utils/zipExport';
+import { downloadBatchAsZip, formatOutputFilename } from './utils/zipExport';
 import { generateSamplePhotos } from './utils/sampleImages';
-import { Zap, ShieldCheck, Cpu, ArrowLeftRight } from 'lucide-react';
 
 export default function App() {
   const [items, setItems] = useState<ImageItem[]>([]);
-  const [editingItem, setEditingItem] = useState<ImageItem | null>(null);
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'studio' | 'grid'>('studio');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
 
-  // Master Crop Settings state
-  const [cropSettings, setCropSettings] = useState<CropSettings>({
-    ratioType: '3:5',
+  // Master Studio Crop Settings
+  const [cropSettings, setCropSettings] = useState<ExtendedCropSettings>({
+    ratioId: 'studio-4-5',
     customWidth: 1000,
     customHeight: 1000,
-    isSwapped: true, // 5:3 ratio (5 width : 3 height)
+    isSwapped: false,
     headroomPercent: 12,
     scaleFactor: 3.6,
+    horizontalOffsetPercent: 0,
+    verticalOffsetPercent: 0,
+    bleedFillMode: 'white',
+    bleedCustomColor: '#ffffff',
     exportFormat: 'image/png',
     quality: 0.92,
     exportMaxDimension: 0,
+    filenameTemplate: '{name}_cropped_{ratio}',
   });
+
+  // Guides state
+  const [guides, setGuides] = useState<GuidesVisibility>({
+    ruleOfThirds: false,
+    biometricGuide: false,
+    goldenRatio: false,
+    beforeAfterSplit: false,
+  });
+
+  const activeItem = items.find((i) => i.id === activeItemId) || items[0] || null;
 
   // Process a single image through detection & cropping pipeline
   const processImageItem = useCallback(
-    async (item: ImageItem, settings: CropSettings): Promise<ImageItem> => {
+    async (item: ImageItem, settings: ExtendedCropSettings): Promise<ImageItem> => {
       const startTime = performance.now();
 
       return new Promise<ImageItem>((resolve) => {
@@ -43,20 +61,14 @@ export default function App() {
         img.onload = async () => {
           try {
             const dimensions = { width: img.naturalWidth, height: img.naturalHeight };
-
-            // 1. Detect head if not manually overridden
             let head = item.manualHead || item.detectedHead;
             if (!head) {
               head = await detectHeadInImage(img);
             }
 
-            // 2. Compute crop box according to aspect ratio & swap state
             const rect = calculateCropRect(dimensions.width, dimensions.height, head, settings);
-
-            // 3. Render cropped slice on HTML5 canvas
             const fileIdentifier = item.file?.type || item.name;
             const { dataUrl, blob } = await renderCroppedImage(img, rect, settings, fileIdentifier);
-
             const endTime = performance.now();
 
             resolve({
@@ -71,20 +83,12 @@ export default function App() {
             });
           } catch (err) {
             console.error('Error processing photo:', err);
-            resolve({
-              ...item,
-              status: 'error',
-              errorMessage: 'Failed to process crop',
-            });
+            resolve({ ...item, status: 'error', errorMessage: 'Failed to process crop' });
           }
         };
 
         img.onerror = () => {
-          resolve({
-            ...item,
-            status: 'error',
-            errorMessage: 'Failed loading image file',
-          });
+          resolve({ ...item, status: 'error', errorMessage: 'Failed loading image' });
         };
 
         img.src = item.originalUrl;
@@ -93,7 +97,7 @@ export default function App() {
     []
   );
 
-  // Ingest new files into queue and run pipeline
+  // Ingest new files
   const handleAddFiles = useCallback(
     async (files: File[]) => {
       setIsProcessing(true);
@@ -114,8 +118,10 @@ export default function App() {
       }));
 
       setItems((prev) => [...prev, ...newItems]);
+      if (!activeItemId && newItems.length > 0) {
+        setActiveItemId(newItems[0].id);
+      }
 
-      // Sequentially process newly added items
       for (const item of newItems) {
         const processed = await processImageItem(item, cropSettings);
         setItems((prev) => prev.map((p) => (p.id === processed.id ? processed : p)));
@@ -123,71 +129,87 @@ export default function App() {
 
       setIsProcessing(false);
     },
-    [cropSettings, processImageItem]
+    [activeItemId, cropSettings, processImageItem]
   );
 
-  // Re-run crop render across all batch items when global settings change (e.g. ratio select or ratio swap)
-  useEffect(() => {
-    if (items.length === 0) return;
+  // Reprocess active item or all when settings change
+  const handleSettingsChange = (newSettings: ExtendedCropSettings) => {
+    setCropSettings(newSettings);
+    if (activeItem) {
+      processImageItem(activeItem, newSettings).then((updated) => {
+        setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+      });
+    }
+  };
 
-    let isMounted = true;
-
-    const reprocessAll = async () => {
-      setIsProcessing(true);
-      for (const item of items) {
-        if (!isMounted) break;
-        if (item.originalUrl) {
-          const updated = await processImageItem(item, cropSettings);
-          if (isMounted) {
-            setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-          }
-        }
+  // Re-run crop across entire queue
+  const handleApplyToAll = async () => {
+    setIsProcessing(true);
+    for (const item of items) {
+      if (item.originalUrl) {
+        const updated = await processImageItem(item, cropSettings);
+        setItems((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
       }
-      if (isMounted) setIsProcessing(false);
-    };
-
-    reprocessAll();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [cropSettings]);
-
-  // Load built-in sample demo photos
-  const handleLoadSamples = async () => {
-    const samples = await generateSamplePhotos();
-    handleAddFiles(samples);
+    }
+    setIsProcessing(false);
   };
 
-  // Delete an item from queue
-  const handleDeleteItem = (id: string) => {
-    setItems((prev) => {
-      const item = prev.find((i) => i.id === id);
-      if (item?.originalUrl) URL.revokeObjectURL(item.originalUrl);
-      return prev.filter((i) => i.id !== id);
+  // Interactive crop rect update
+  const handleCropRectChange = async (newRect: CropRect) => {
+    if (!activeItem) return;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      const fileIdentifier = activeItem.file?.type || activeItem.name;
+      const { dataUrl, blob } = await renderCroppedImage(img, newRect, cropSettings, fileIdentifier);
+      setItems((prev) =>
+        prev.map((i) =>
+          i.id === activeItem.id
+            ? { ...i, cropRect: newRect, croppedUrl: dataUrl, croppedBlob: blob, status: 'cropped' }
+            : i
+        )
+      );
+    };
+    img.src = activeItem.originalUrl;
+  };
+
+  // Head anchor position change
+  const handleHeadAnchorChange = (newHead: DetectedHead) => {
+    if (!activeItem) return;
+    const updated = { ...activeItem, manualHead: newHead };
+    processImageItem(updated, cropSettings).then((res) => {
+      setItems((prev) => prev.map((i) => (i.id === res.id ? res : i)));
     });
   };
 
-  // Clear entire queue
-  const handleResetAll = () => {
-    items.forEach((item) => {
-      if (item.originalUrl) URL.revokeObjectURL(item.originalUrl);
-    });
-    setItems([]);
+  // Re-detect head on active item
+  const handleReDetectHead = async () => {
+    if (!activeItem) return;
+    setIsProcessing(true);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      const head = await detectHeadInImage(img);
+      const updated = { ...activeItem, detectedHead: head, manualHead: null };
+      const processed = await processImageItem(updated, cropSettings);
+      setItems((prev) => prev.map((i) => (i.id === processed.id ? processed : i)));
+      setIsProcessing(false);
+    };
+    img.src = activeItem.originalUrl;
   };
 
   // Download single item
   const handleDownloadSingle = (item: ImageItem) => {
     if (!item.croppedBlob || !item.croppedUrl) return;
+    const filename = formatOutputFilename(
+      item.name,
+      cropSettings.filenameTemplate,
+      cropSettings.ratioId,
+      cropSettings.exportFormat
+    );
     const a = document.createElement('a');
     a.href = item.croppedUrl;
-
-    let ext = '.jpg';
-    if (item.croppedBlob.type === 'image/png') ext = '.png';
-    else if (item.croppedBlob.type === 'image/webp') ext = '.webp';
-
-    const base = item.name.substring(0, item.name.lastIndexOf('.')) || item.name;
-    a.download = `${base}${ext}`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -197,7 +219,12 @@ export default function App() {
   const handleDownloadBatchZip = async () => {
     try {
       setIsZipping(true);
-      await downloadBatchAsZip(items, 'subject-crop-trimmed-photos.zip');
+      await downloadBatchAsZip(
+        items,
+        'studio-pro-cropped-photos.zip',
+        cropSettings.filenameTemplate,
+        cropSettings.ratioId
+      );
     } catch (e) {
       console.error('Failed zipping batch:', e);
     } finally {
@@ -205,109 +232,159 @@ export default function App() {
     }
   };
 
+  // Delete item
+  const handleDeleteItem = (id: string) => {
+    setItems((prev) => {
+      const item = prev.find((i) => i.id === id);
+      if (item?.originalUrl) URL.revokeObjectURL(item.originalUrl);
+      const filtered = prev.filter((i) => i.id !== id);
+      if (activeItemId === id) {
+        setActiveItemId(filtered[0]?.id || null);
+      }
+      return filtered;
+    });
+  };
+
+  // Clear queue
+  const handleClearQueue = () => {
+    items.forEach((i) => {
+      if (i.originalUrl) URL.revokeObjectURL(i.originalUrl);
+    });
+    setItems([]);
+    setActiveItemId(null);
+  };
+
+  // Load sample photos
+  const handleLoadSamples = async () => {
+    const samples = await generateSamplePhotos();
+    handleAddFiles(samples);
+  };
+
+  // Global Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+
+      switch (e.key.toLowerCase()) {
+        case 'g':
+          setGuides((g) => ({ ...g, ruleOfThirds: !g.ruleOfThirds }));
+          break;
+        case 'e':
+          setGuides((g) => ({ ...g, biometricGuide: !g.biometricGuide }));
+          break;
+        case 'r':
+          setGuides((g) => ({ ...g, goldenRatio: !g.goldenRatio }));
+          break;
+        case 'b':
+          setGuides((g) => ({ ...g, beforeAfterSplit: !g.beforeAfterSplit }));
+          break;
+        case '?':
+          setShowShortcuts((s) => !s);
+          break;
+        case 'arrowright':
+          if (items.length > 0) {
+            const idx = items.findIndex((i) => i.id === activeItemId);
+            const next = items[(idx + 1) % items.length];
+            if (next) setActiveItemId(next.id);
+          }
+          break;
+        case 'arrowleft':
+          if (items.length > 0) {
+            const idx = items.findIndex((i) => i.id === activeItemId);
+            const prev = items[(idx - 1 + items.length) % items.length];
+            if (prev) setActiveItemId(prev.id);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [items, activeItemId]);
+
   const croppedCount = items.filter((i) => i.status === 'cropped').length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-500 selection:text-white">
-      {/* Top Header */}
-      <Header
+    <div className="h-screen w-screen flex flex-col bg-zinc-950 text-zinc-100 overflow-hidden select-none">
+      {/* Top Application Header */}
+      <WorkspaceHeader
         totalCount={items.length}
         croppedCount={croppedCount}
-        onDownloadAllZip={handleDownloadBatchZip}
-        onResetAll={handleResetAll}
-        onLoadSamples={handleLoadSamples}
-        isProcessing={isProcessing}
+        viewMode={viewMode}
         isZipping={isZipping}
+        onToggleViewMode={() => setViewMode((m) => (m === 'studio' ? 'grid' : 'studio'))}
+        onDownloadAllZip={handleDownloadBatchZip}
+        onLoadSamples={handleLoadSamples}
+        onOpenShortcuts={() => setShowShortcuts(true)}
       />
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-8">
-        {/* Side-by-Side Controls & Upload Area */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-          {/* Crop Settings Selector (Left 7 Cols) */}
-          <div className="lg:col-span-7 flex flex-col">
-            <RatioSelector
+      {/* Main Multi-Pane Viewport */}
+      <div className="flex-1 flex overflow-hidden">
+        {viewMode === 'studio' ? (
+          <>
+            {/* Left Sidebar: Presets */}
+            <PresetSidebar
               settings={cropSettings}
-              onChange={setCropSettings}
+              onChange={handleSettingsChange}
               disabled={isProcessing}
             />
-          </div>
 
-          {/* Upload Zone (Right 5 Cols) */}
-          <div className="lg:col-span-5 flex flex-col">
-            <DropZone
+            {/* Central Canvas Stage */}
+            <CanvasStage
+              activeItem={activeItem}
+              settings={cropSettings}
+              guides={guides}
+              isProcessing={isProcessing}
               onFilesSelected={handleAddFiles}
               onLoadSamples={handleLoadSamples}
-              isProcessing={isProcessing}
+              onCropRectChange={handleCropRectChange}
+              onHeadAnchorChange={handleHeadAnchorChange}
+              onToggleGuide={(key) => setGuides((g) => ({ ...g, [key]: !g[key] }))}
             />
-          </div>
-        </div>
 
-        {/* Batch Queue View */}
-        <BatchGrid
+            {/* Right Sidebar: Inspector */}
+            <StudioInspector
+              settings={cropSettings}
+              activeItem={activeItem}
+              isProcessing={isProcessing}
+              onChange={handleSettingsChange}
+              onReDetectHead={handleReDetectHead}
+              onApplyToAll={handleApplyToAll}
+            />
+          </>
+        ) : (
+          /* Full Screen Batch Light Table Grid */
+          <BatchLightTable
+            items={items}
+            onSelectAndEdit={(item) => {
+              setActiveItemId(item.id);
+              setViewMode('studio');
+            }}
+            onDeleteItem={handleDeleteItem}
+            onDownloadItem={handleDownloadSingle}
+          />
+        )}
+      </div>
+
+      {/* Synchronized Bottom Filmstrip */}
+      {viewMode === 'studio' && (
+        <FilmstripQueue
           items={items}
-          settings={cropSettings}
-          onEditItem={setEditingItem}
+          activeItemId={activeItemId}
+          isProcessing={isProcessing}
+          onSelectItem={(item) => setActiveItemId(item.id)}
           onDeleteItem={handleDeleteItem}
           onDownloadItem={handleDownloadSingle}
-        />
-      </main>
-
-      {/* Footer with Info Badges */}
-      <footer className="border-t border-slate-800 bg-slate-900/60 mt-12 py-8 px-4 lg:px-8">
-        <div className="max-w-7xl mx-auto space-y-6">
-          {/* Information Badges inside Footer */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
-              <div className="p-2.5 bg-blue-500/10 text-blue-400 rounded-xl border border-blue-500/20">
-                <Cpu className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">On-Device ML Engine</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">MediaPipe WASM + Canvas Saliency</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
-              <div className="p-2.5 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">100% Data Privacy</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">0% server upload, local memory only</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center gap-3">
-              <div className="p-2.5 bg-purple-500/10 text-purple-400 rounded-xl border border-purple-500/20">
-                <ArrowLeftRight className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-slate-200">Interchangeable Swap</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5">Instant 4:5 ↔ 5:4, 5:7 ↔ 7:5 ratio flip</p>
-              </div>
-            </div>
-          </div>
-
-          <p className="text-center text-xs text-slate-500 pt-2 border-t border-slate-800/60">
-            Subject Crop PWA — Browser-Side Machine Learning Photo Trimmer
-          </p>
-        </div>
-      </footer>
-
-      {/* Single Item Fine-Tune Editor Modal */}
-      {editingItem && (
-        <SingleEditorModal
-          item={editingItem}
-          settings={cropSettings}
-          onClose={() => setEditingItem(null)}
-          onSave={(updated) => {
-            setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-          }}
+          onAddFiles={handleAddFiles}
+          onLoadSamples={handleLoadSamples}
+          onClearQueue={handleClearQueue}
         />
       )}
 
-      {/* PWA Offline Install Banner */}
+      {/* Keyboard Shortcuts Modal */}
+      <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+      {/* PWA Install Prompt */}
       <PWAInstallPrompt />
     </div>
   );

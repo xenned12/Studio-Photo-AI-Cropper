@@ -1,1 +1,53 @@
 @import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-base: #09090b;
+    --bg-panel: #121215;
+    --bg-surface: #18181c;
+    --border-subtle: #27272a;
+    --border-focus: #3b82f6;
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--bg-base);
+    color: #f4f4f5;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    letter-spacing: -0.012em;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
+  }
+}
+
+/* Studio Canvas Checkerboard */
+.checkerboard-pattern {
+  background-color: #121215;
+  background-image: 
+    linear-gradient(45deg, #18181c 25%, transparent 25%), 
+    linear-gradient(-45deg, #18181c 25%, transparent 25%), 
+    linear-gradient(45deg, transparent 75%, #18181c 75%), 
+    linear-gradient(-45deg, transparent 75%, #18181c 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+}
+
+/* Sleek Studio Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #121215;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
