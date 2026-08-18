@@ -1,55 +1,58 @@
 import JSZip from 'jszip';
 import { ImageItem } from '../types';
 
-/**
- * Downloads a batch of cropped images as a single zip archive
- */
+export function formatOutputFilename(
+  originalName: string,
+  template: string,
+  ratioLabel: string,
+  format: 'image/png' | 'image/jpeg' | 'image/webp'
+): string {
+  const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+  let ext = '.png';
+  if (format === 'image/jpeg') ext = '.jpg';
+  else if (format === 'image/webp') ext = '.webp';
+
+  const result = (template || '{name}_cropped_{ratio}')
+    .replace(/{name}/g, baseName)
+    .replace(/{ratio}/g, ratioLabel.replace(/[:/]/g, '-'));
+
+  return `${result}${ext}`;
+}
+
 export async function downloadBatchAsZip(
   items: ImageItem[],
-  zipFilename: string = 'subject-cropped-photos.zip',
-  onProgress?: (percent: number) => void
+  zipFilename: string = 'studio-cropped-photos.zip',
+  template: string = '{name}_cropped_{ratio}',
+  ratioLabel: string = 'crop'
 ): Promise<void> {
   const zip = new JSZip();
-  const folder = zip.folder('cropped_photos');
+  const croppedItems = items.filter((item) => item.status === 'cropped' && item.croppedBlob);
 
-  const processedItems = items.filter((item) => item.croppedBlob && item.status === 'cropped');
-
-  if (processedItems.length === 0) {
-    throw new Error('No cropped images available to zip.');
+  if (croppedItems.length === 0) {
+    throw new Error('No cropped photos available to export');
   }
 
-  let count = 0;
-  for (const item of processedItems) {
+  for (let i = 0; i < croppedItems.length; i++) {
+    const item = croppedItems[i];
     if (item.croppedBlob) {
-      // Determine file extension
-      let ext = '.jpg';
-      if (item.croppedBlob.type === 'image/png') ext = '.png';
-      else if (item.croppedBlob.type === 'image/webp') ext = '.webp';
-
-      const baseName = item.name.substring(0, item.name.lastIndexOf('.')) || item.name;
-      const fileName = `${baseName}${ext}`;
-
-      folder?.file(fileName, item.croppedBlob);
-      count++;
-      if (onProgress) {
-        onProgress(Math.round((count / processedItems.length) * 50));
-      }
+      const filename = formatOutputFilename(
+        item.name,
+        template,
+        ratioLabel,
+        (item.croppedBlob.type as 'image/png' | 'image/jpeg' | 'image/webp') || 'image/png'
+      );
+      zip.file(filename, item.croppedBlob);
     }
   }
 
-  const content = await zip.generateAsync({ type: 'blob' }, (metadata) => {
-    if (onProgress) {
-      onProgress(50 + Math.round((metadata.percent / 100) * 50));
-    }
-  });
+  const content = await zip.generateAsync({ type: 'blob' });
+  const downloadUrl = URL.createObjectURL(content);
 
-  // Trigger download
-  const url = URL.createObjectURL(content);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = zipFilename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const a = document.createElement('a');
+  a.href = downloadUrl;
+  a.download = zipFilename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(downloadUrl);
 }
