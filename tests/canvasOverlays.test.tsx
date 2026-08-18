@@ -73,3 +73,80 @@ describe('BeforeAfterSplit', () => {
     expect(html).toContain('clip-path:polygon(50% 0, 100% 0, 100% 100%, 50% 100%)');
   });
 });
+
+import { CropBoundingBox } from '../src/components/canvas/CropBoundingBox';
+
+describe('CropBoundingBox', () => {
+  const allFalseGuides: GuidesVisibility = {
+    ruleOfThirds: false,
+    biometricGuide: false,
+    goldenRatio: false,
+    beforeAfterSplit: false,
+  };
+
+  it('renders null when image dimensions are zero', () => {
+    const html = renderToStaticMarkup(
+      <CropBoundingBox
+        cropRect={{ x: 100, y: 100, width: 400, height: 500 }}
+        imageDimensions={{ width: 0, height: 0 }}
+        targetRatio={4 / 5}
+        activeHead={null}
+        guides={allFalseGuides}
+        onCropRectChange={() => {}}
+        onHeadAnchorChange={() => {}}
+      />
+    );
+    expect(html).toBe('');
+  });
+
+  it('renders crop window, 8 handles, and HUD dimension pill', () => {
+    const html = renderToStaticMarkup(
+      <CropBoundingBox
+        cropRect={{ x: 100, y: 100, width: 400, height: 500 }}
+        imageDimensions={{ width: 1000, height: 1000 }}
+        targetRatio={4 / 5}
+        activeHead={null}
+        guides={allFalseGuides}
+        onCropRectChange={() => {}}
+        onHeadAnchorChange={() => {}}
+      />
+    );
+    expect(html).toContain('400 × 500 px');
+    expect(html).toContain('cursor-move');
+    expect(html).toContain('left:10%');
+    expect(html).toContain('top:10%');
+    expect(html).toContain('width:40%');
+    expect(html).toContain('height:50%');
+    // Check handles cursor styles
+    expect(html).toContain('cursor:nwse-resize');
+    expect(html).toContain('cursor:ns-resize');
+    expect(html).toContain('cursor:nesw-resize');
+    expect(html).toContain('cursor:ew-resize');
+  });
+
+  it('renders head anchor target reticle when activeHead is provided', () => {
+    const html = renderToStaticMarkup(
+      <CropBoundingBox
+        cropRect={{ x: 100, y: 100, width: 400, height: 500 }}
+        imageDimensions={{ width: 1000, height: 1000 }}
+        targetRatio={4 / 5}
+        activeHead={{
+          x: 0.25,
+          y: 0.25,
+          width: 0.5,
+          height: 0.5,
+          confidence: 0.95,
+          source: 'mediapipe',
+        }}
+        guides={allFalseGuides}
+        onCropRectChange={() => {}}
+        onHeadAnchorChange={() => {}}
+      />
+    );
+    expect(html).toContain('Draggable Subject Head Anchor');
+    // Head center X = (0.25 + 0.25) * 100 = 50%, Y = (0.25 + 0.25) * 100 = 50%
+    expect(html).toContain('left:50%');
+    expect(html).toContain('top:50%');
+  });
+});
+
